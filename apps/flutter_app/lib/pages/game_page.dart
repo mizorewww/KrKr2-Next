@@ -405,7 +405,11 @@ class _GamePageState extends State<GamePage> with WidgetsBindingObserver {
         if (result != _engineResultOk) {
           _ticker?.stop();
           final error = _bridge.engineGetLastError();
-          _log('Tick faulted: result=$result, error=$error');
+          _log('Tick ended: result=$result, error=$error');
+          if (error.contains('termination') || error.contains('terminated')) {
+            _exitGame();
+            return;
+          }
           setState(() {
             _isTicking = false;
             _phase = _EnginePhase.error;
