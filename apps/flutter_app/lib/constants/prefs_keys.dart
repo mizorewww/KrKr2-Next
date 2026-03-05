@@ -16,8 +16,12 @@ class PrefsKeys {
   static const String locale = 'krkr2_locale';
   static const String themeMode = 'krkr2_theme_mode';
   static const String forceLandscape = 'krkr2_force_landscape';
+
   /// Pending play session: JSON { "path": "...", "startTime": "ISO8601" }. Cleared on normal exit or applied on next launch.
   static const String pendingPlaySession = 'krkr2_pending_play_session';
+
+  /// Recently settled play session IDs. Used to avoid duplicate crediting.
+  static const String settledPlaySessionIds = 'krkr2_settled_play_session_ids';
 
   // ── Engine option keys (must match C++ ENGINE_OPTION_* constants) ─
   static const String optionAngleBackend = 'angle_backend';

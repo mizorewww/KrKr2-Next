@@ -89,13 +89,16 @@ class _GamePageState extends State<GamePage> with WidgetsBindingObserver {
   Timer? _memoryStatsTimer;
   bool _memoryStatsPollInFlight = false;
 
-  /// When the game page was entered; used to compute play duration on exit.
-  DateTime? _sessionStartTime;
+  String _playSessionId = '';
+  int _playActiveMillis = 0;
+  final Stopwatch _playStopwatch = Stopwatch();
+  int? _playRunningSinceEpochMs;
+  bool _playSessionFinalized = false;
 
   @override
   void initState() {
     super.initState();
-    _sessionStartTime = DateTime.now();
+    _playSessionId = _createPlaySessionId();
     if (widget.gameManager != null) {
       unawaited(_savePendingPlaySession());
     }
@@ -117,14 +120,46 @@ class _GamePageState extends State<GamePage> with WidgetsBindingObserver {
     });
   }
 
+  String _createPlaySessionId() {
+    final now = DateTime.now().microsecondsSinceEpoch;
+    return '$now-${widget.gamePath.hashCode}-${identityHashCode(this)}';
+  }
+
+  void _startPlaySessionRun({bool persist = true}) {
+    if (widget.gameManager == null) return;
+    if (_playSessionFinalized || _playStopwatch.isRunning) return;
+    _playRunningSinceEpochMs = DateTime.now().millisecondsSinceEpoch;
+    _playStopwatch.start();
+    if (persist) {
+      unawaited(_savePendingPlaySession());
+    }
+  }
+
+  void _stopPlaySessionRun({bool persist = true}) {
+    if (widget.gameManager == null) return;
+    if (!_playStopwatch.isRunning) return;
+    _playStopwatch.stop();
+    _playActiveMillis += _playStopwatch.elapsedMilliseconds;
+    _playStopwatch.reset();
+    _playRunningSinceEpochMs = null;
+    if (persist) {
+      unawaited(_savePendingPlaySession());
+    }
+  }
+
   Future<void> _savePendingPlaySession() async {
-    if (_sessionStartTime == null) return;
+    if (widget.gameManager == null || _playSessionId.isEmpty) return;
     final prefs = await SharedPreferences.getInstance();
+    final activeSeconds = _playActiveMillis ~/ 1000;
     await prefs.setString(
       PrefsKeys.pendingPlaySession,
       jsonEncode({
+        'version': 2,
+        'sessionId': _playSessionId,
         'path': widget.gamePath,
-        'startTime': _sessionStartTime!.toIso8601String(),
+        'activeSeconds': activeSeconds,
+        'isRunning': _playStopwatch.isRunning,
+        'runningSinceEpochMs': _playRunningSinceEpochMs ?? 0,
       }),
     );
   }
@@ -134,14 +169,30 @@ class _GamePageState extends State<GamePage> with WidgetsBindingObserver {
     await prefs.remove(PrefsKeys.pendingPlaySession);
   }
 
+  Future<void> _finalizePlaySession() async {
+    if (widget.gameManager == null || _playSessionFinalized) return;
+    _playSessionFinalized = true;
+    _stopPlaySessionRun(persist: false);
+
+    try {
+      int seconds = _playActiveMillis ~/ 1000;
+      if (seconds > 86400) seconds = 86400;
+      if (seconds > 0) {
+        await widget.gameManager!.recordPlaySession(
+          widget.gamePath,
+          seconds,
+          _playSessionId,
+        );
+      }
+    } finally {
+      await _clearPendingPlaySession();
+    }
+  }
+
   @override
   void dispose() {
-    if (widget.gameManager != null && _sessionStartTime != null) {
-      final seconds = DateTime.now().difference(_sessionStartTime!).inSeconds;
-      if (seconds > 0 && seconds <= 86400) {
-        widget.gameManager!.addPlayDuration(widget.gamePath, seconds);
-      }
-      unawaited(_clearPendingPlaySession());
+    if (widget.gameManager != null) {
+      unawaited(_finalizePlaySession());
     }
     _stopStartupPolling();
     _stopMemoryStatsPolling();
@@ -421,6 +472,7 @@ class _GamePageState extends State<GamePage> with WidgetsBindingObserver {
   void _startTickLoop() {
     if (_isTicking) return;
     setState(() => _isTicking = true);
+    _startPlaySessionRun();
     _log('Tick loop started');
     if (kDebugMode) _startMemoryStatsPolling();
 
@@ -441,6 +493,7 @@ class _GamePageState extends State<GamePage> with WidgetsBindingObserver {
 
         if (result != _engineResultOk) {
           _ticker?.stop();
+          _stopPlaySessionRun();
           final error = _bridge.engineGetLastError();
           _log('Tick ended: result=$result, error=$error');
           if (error.contains('termination') || error.contains('terminated')) {
@@ -489,6 +542,7 @@ class _GamePageState extends State<GamePage> with WidgetsBindingObserver {
   }
 
   void _stopTickLoop({bool notify = true}) {
+    _stopPlaySessionRun();
     _ticker?.stop();
     _ticker?.dispose();
     _ticker = null;
